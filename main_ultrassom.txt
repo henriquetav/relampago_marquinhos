@@ -1,0 +1,220 @@
+//Receiver code
+
+#include "mbed.h"
+#include "math.h"
+#include "nRF24L01P.h"
+#include "ultrasonic.h"
+
+#define M_PI           3.14159265358979323846
+
+Serial pc(USBTX, USBRX); // tx, rx
+
+nRF24L01P my_nrf24l01p(D11, D12, PTC5, D10, D9, D8);    // MOSI (PTD2), MISO (PTD3), SCK (PTC5), CSN (PTD0), CE (PTD5), IRQ (PTA13)
+
+
+ultrasonic mu(D8, D9, .1, 1, &dist);    //Set the trigger pin to D8 and the echo pin to D9
+                                        //have updates every .1 seconds and a timeout after 1
+                                        //second, and call dist when the distance changes
+
+
+DigitalOut myled1(LED1, 1);
+DigitalOut myled2(LED2, 1);
+DigitalOut myled3(LED3, 1);
+
+DigitalOut IN1(D5, 0); //PTA5
+DigitalOut IN2(D4, 0); //PTA4
+DigitalOut IN3(D3, 0); //PTA12
+DigitalOut IN4(D2, 0); //PTD4
+
+InterruptIn encoder_A(PTD6);
+InterruptIn encoder_B(PTD7);
+
+int pulsos_A;
+int pulsos_B;
+//int pulsos_A_old;
+int pulsos_B_old;
+//int pulsos_B_last;
+int PULSES_90;
+
+void count_A(void) {
+    pulsos_A++;  //Incrementa contador
+    //pc.printf("pulsos_A:    %d\r\n", pulsos_A);
+}
+
+void count_B(void) {
+    pulsos_B++;  //Incrementa contador
+    pc.printf("pulsos_B:    %d\r\n", pulsos_B);
+}
+
+/*
+void wait_until(bool condition) {
+    while(condition) {
+       //pc.printf("condition:    %d  (pulsos_A:  %d  /PULSES_90: %d)\r\n", condition, pulsos_A, PULSES_90);
+    }
+}
+*/
+
+void go_ahead(void) {
+    IN1 = 0;    IN2 = 1;    IN3 = 0;    IN4 = 1;
+}
+
+void go_back(void) {
+    IN1 = 1;    IN2 = 0;    IN3 = 1;    IN4 = 0;
+}
+
+bool turn_right(void) {
+    pc.printf("\tTurning right\r\n");
+    IN1 = 1;    IN2 = 0;    IN3 = 0;    IN4 = 1;
+    pulsos_B = 0; 
+    encoder_A.enable_irq() ; 
+    while (true) {
+        encoder_A.disable_irq(); 
+        if (pulsos_B >= PULSES_90){
+            IN1 = 0;    IN2 = 0;    IN3 = 0;    IN4 = 0;
+            break;
+        }
+        encoder_A.enable_irq(); 
+        wait_ms(1);
+    } 
+    return 1;
+}
+
+bool turn_left(void) {
+    pc.printf("\tTurning left\r\n");
+    IN1 = 0;    IN2 = 1;    IN3 = 1;    IN4 = 0;
+    pulsos_B = 0;
+    encoder_A.enable_irq(); 
+    while (true) {
+        encoder_A.disable_irq(); 
+        if (pulsos_B >= PULSES_90){
+            IN1 = 0;    IN2 = 0;    IN3 = 0;    IN4 = 0;
+            break;
+        }
+        encoder_A.enable_irq();
+        wait_ms(1);
+    }
+    return 1;
+}
+
+
+void dist(int distance)
+{
+    if(distance < 0.10){
+        turn_right();
+        };
+    
+    printf("Distance changed to %dmm\r\n", distance);
+}
+
+int main() {
+    #define PULSES_PER_TURN 8
+    #define WHEELS_AXIS_WIDTH   15.5 //cm
+    #define WHEELS_DIAMETER 7 //cm
+    int ANGLE_PER_PULSE = 360/PULSES_PER_TURN ; //°
+
+    // Para 90°:
+    float DISTANCE_90 = (M_PI/2) * (WHEELS_AXIS_WIDTH/2);
+    float DISTANCE_PER_PULSE = (M_PI/180) * ANGLE_PER_PULSE * (WHEELS_DIAMETER/2);
+    PULSES_90 = 2*ceil(DISTANCE_90/DISTANCE_PER_PULSE);
+    
+    encoder_A.mode(PullUp); //habilita bota para modo pull-up interno
+    encoder_A.rise(&count_A); //desvia para a iqr com borda de subida
+    encoder_A.fall(&count_A); //desvia para a iqr com borda de descida
+    encoder_A.disable_irq() ; 
+    encoder_B.mode(PullUp); //habilita bota para modo pull-up interno
+    encoder_B.rise(&count_B); //desvia para a iqr com borda de subida
+    encoder_B.fall(&count_B); //desvia para a iqr com borda de descida
+    encoder_B.disable_irq() ; 
+    pulsos_A = 0;    pulsos_B = 0;
+
+    
+    // The nRF24L01+ supports transfers from 1 to 32 bytes, but Sparkfun's
+    //  "Nordic Serial Interface Board" (http://www.sparkfun.com/products/9019)
+    //  only handles 4 byte transfers in the ATMega code.
+    #define TRANSFER_SIZE   1
+    #define RF_FREQUENCY    2457
+
+    char rxData[TRANSFER_SIZE];
+    int rxDataCnt = 0;
+
+    my_nrf24l01p.powerUp();
+    my_nrf24l01p.setRfFrequency(RF_FREQUENCY);
+    
+    // LEDs to mark initialization
+    for (int i = 0; i < 5; i++) {
+        myled1 = 0;    myled2 = 1;    myled3 = 1;
+        wait(0.25);
+        myled1 = 1;    myled2 = 0;    myled3 = 1;
+        wait(0.25);
+        myled1 = 1;    myled2 = 1;    myled3 = 0;
+        wait(0.25);
+    }
+    myled1 = 1;    myled2 = 1;    myled3 = 1;
+    
+    // Display the (default) setup of the nRF24L01+ chip
+    pc.printf( "nRF24L01+ Frequency    : %d MHz\r\n",  my_nrf24l01p.getRfFrequency() );
+    pc.printf( "nRF24L01+ Output power : %d dBm\r\n",  my_nrf24l01p.getRfOutputPower() );
+    pc.printf( "nRF24L01+ Data Rate    : %d kbps\r\n", my_nrf24l01p.getAirDataRate() );
+    pc.printf( "nRF24L01+ TX Address   : 0x%010llX\r\n", my_nrf24l01p.getTxAddress() );
+    pc.printf( "nRF24L01+ RX Address   : 0x%010llX\r\n", my_nrf24l01p.getRxAddress() );
+    
+    pc.printf( "DISTANCE_90    : %f \r\n",  DISTANCE_90 );
+    pc.printf( "DISTANCE_PER_PULSE    : %f \r\n",  DISTANCE_PER_PULSE );
+    pc.printf( "PULSES_90    : %d \r\n",  PULSES_90 );
+
+
+    my_nrf24l01p.setTransferSize( TRANSFER_SIZE );
+
+    my_nrf24l01p.setReceiveMode();
+    my_nrf24l01p.enable();
+    
+    mu.startUpdates();//start mesuring the distance
+    
+    while (1) {
+        // If we've received anything in the nRF24L01+...
+        if ( my_nrf24l01p.readable() ) {
+
+            // ...read the data into the receive buffer
+            rxDataCnt = my_nrf24l01p.read( NRF24L01P_PIPE_P0, rxData, sizeof( rxData ) );
+           
+            // Display the receive buffer contents via the host serial link
+            pc.printf("Command received: ");
+            for ( int i = 0; rxDataCnt > 0; rxDataCnt--, i++ ) {
+                pc.putc(rxData[i]);
+            }
+            pc.printf("\n\r"); 
+            
+            switch (rxData[0]) {
+                case '0':
+                    myled1 = 1;    myled2 = 1;    myled3 = 1;
+                    IN1 = 0;    IN2 = 0;    IN3 = 0;    IN4 = 0;
+                    break;
+                case '1':
+                    myled1 = 0;    myled2 = 0;    myled3 = 0;
+                    IN1 = 0;    IN2 = 0;    IN3 = 0;    IN4 = 0;
+                    break;
+                case 'N':
+                    myled1 = 0;    myled2 = 1;    myled3 = 1;
+                    go_ahead();
+                    break;
+                case 'S':
+                    myled1 = 1;    myled2 = 0;    myled3 = 1;
+                    go_back();
+                    break;
+                case 'E':
+                    myled1 = 0;    myled2 = 1;    myled3 = 1;
+                    if ( turn_right() )
+                        pc.printf("-\tTurned right successfully\r\n");
+                    break;
+                case 'W':
+                    myled1 = 1;    myled2 = 0;    myled3 = 1;
+                    if ( turn_left() )
+                        pc.printf("-\tTurned right successfully\r\n");
+                    break;
+            }
+        }
+    }
+       
+               mu.checkDistance();     //call checkDistance() as much as possible, as this is where
+                                //the class checks if dist needs to be called.
+}
